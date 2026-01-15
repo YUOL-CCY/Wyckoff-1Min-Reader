@@ -1,12 +1,10 @@
 name: Daily Stock AI Report
 
 on:
-  workflow_dispatch:      # 允许手动触发
+  workflow_dispatch:
   schedule:
-    # UTC 04:00 = 北京时间 12:00 (午盘)
-    - cron: "0 4 * * *"   
-    # UTC 07:15 = 北京时间 15:15 (收盘后)
-    - cron: "15 7 * * *"   
+    - cron: "0 4 * * *"   # 北京时间 12:00
+    - cron: "15 7 * * *"  # 北京时间 15:15
 
 permissions:
   contents: write
@@ -32,22 +30,22 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # === 修改点：新增 google-generativeai ===
-          pip install pandas akshare mplfinance openai requests google-generativeai
+          # 安装 requests 用于 Gemini HTTP 调用，安装 openai 用于官方调用
+          pip install pandas akshare mplfinance openai requests
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run Analysis Script
         env:
-          # === 配置 Gemini (首选) ===
+          # === 1. Google Gemini 配置 (首选) ===
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: "gemini-1.5-flash" # 推荐用 flash，速度快且免费额度高
+          GEMINI_MODEL: "gemini-1.5-flash" 
           
-          # === 配置 OpenAI/DeepSeek (备用) ===
+          # === 2. 官方 OpenAI 配置 (备用) ===
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: "https://api.deepseek.com" # 如果你用DeepSeek
-          AI_MODEL: "deepseek-chat"
+          AI_MODEL: "gpt-4o" # 指定官方模型
+          # 注意：这里删除了 OPENAI_BASE_URL，默认连接官方接口
           
-          # === 通用配置 ===
+          # === 3. 通用配置 ===
           WYCKOFF_PROMPT_TEMPLATE: ${{ secrets.WYCKOFF_PROMPT_TEMPLATE }}
           SYMBOL: "600970" 
           BARS_COUNT: "600"
@@ -55,7 +53,6 @@ jobs:
           mkdir -p data reports
           python main.py
 
-      # === 清理旧文件 (只保留最近7天) ===
       - name: Cleanup old data
         run: |
           echo "Cleaning up files older than 7 days..."
@@ -67,10 +64,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 包含新增的文件和被删除的文件
           git add --all
-          
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
@@ -89,76 +83,38 @@ jobs:
           set -euo pipefail
           export LANG=C.UTF-8
           
-          echo "=== 1. 查找文件 ==="
-          # 使用 find 查找最新的 md 和 png
+          # 查找最新文件
           REPORT_FILE=$(find reports -name "*.md" -type f -printf "%T@ %p\n" | sort -n | tail -1 | cut -d' ' -f2-)
           CHART_FILE=$(find reports -name "*.png" -type f -printf "%T@ %p\n" | sort -n | tail -1 | cut -d' ' -f2-)
 
-          if [ -z "${REPORT_FILE:-}" ]; then
-            echo "::warning::没有找到报告文件，跳过通知。"
-            exit 0
-          fi
-          
-          echo "Found Report: $REPORT_FILE"
+          if [ -z "${REPORT_FILE:-}" ]; then echo "No report found."; exit 0; fi
 
-          echo "=== 2. 准备中间文件 ==="
-          # 2.1 处理图片：复制到 /tmp 目录
+          # 图片处理
           HAS_IMAGE=false
           if [ -n "${CHART_FILE:-}" ] && [ -f "$CHART_FILE" ]; then
              cp "$CHART_FILE" /tmp/chart.png
-             echo "Image copied to /tmp/chart.png"
              HAS_IMAGE=true
-          else
-             echo "No image found."
           fi
 
-          # 2.2 处理文案：生成 caption.txt
-          # 传递 GitHub Server URL 和 Repository
+          # 摘要生成
           python - "$REPORT_FILE" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" <<'PY' > /tmp/caption.txt
           import pathlib, sys
-          
-          path = sys.argv[1]
-          server_url = sys.argv[2]
-          repo = sys.argv[3]
-          
+          path, server, repo = sys.argv[1], sys.argv[2], sys.argv[3]
           try:
               text = pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
               lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-              
-              # 提取标题 (去除Markdown #)
               title = lines[0].lstrip("#").strip() if lines else "AI Analysis"
-              
-              # 提取正文 (跳过第一行标题和第二行可能的图片链接)
-              # 我们假设正文从第3行开始，取前40行做摘要
-              body_lines = lines[2:40]
-              summary = "\n".join(body_lines)[:900]
-              
-              # 构造 HTML 格式消息
-              # 链接格式: https://github.com/用户名/仓库名
-              full_url = f"{server_url}/{repo}"
-              msg = f"<b>{title}</b>\n\n{summary}\n\n... <a href='{full_url}'>查看完整版</a>"
-              print(msg)
-          except Exception as e:
-              print(f"Error parsing report: {e}")
+              summary = "\n".join(lines[2:40])[:900]
+              print(f"<b>{title}</b>\n\n{summary}\n\n... <a href='{server}/{repo}'>查看完整版</a>")
+          except: print("Error parsing report")
           PY
           
-          # 将 caption 读取到环境变量中 (解决 curl 读取文件的问题)
           CAPTION_TEXT=$(cat /tmp/caption.txt)
-          echo "Caption generated."
 
-          echo "=== 3. 发送请求 ==="
           if [ "$HAS_IMAGE" = true ]; then
-            echo "Sending Photo..."
-            # 注意：使用 -F 传递 caption 字段
             curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto" \
-              -F "chat_id=${TG_CHAT_ID}" \
-              -F "photo=@/tmp/chart.png" \
-              -F "parse_mode=HTML" \
-              -F "caption=${CAPTION_TEXT}"
+              -F "chat_id=${TG_CHAT_ID}" -F "photo=@/tmp/chart.png" -F "parse_mode=HTML" -F "caption=${CAPTION_TEXT}"
           else
-            echo "Sending Text..."
             curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-              -d "chat_id=${TG_CHAT_ID}" \
-              -d "parse_mode=HTML" \
-              --data-urlencode "text=${CAPTION_TEXT}"
+              -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=HTML" --data-urlencode "text=${CAPTION_TEXT}"
           fi
