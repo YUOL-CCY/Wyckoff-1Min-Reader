@@ -44,6 +44,7 @@ def fetch_a_share_minute(symbol: str) -> pd.DataFrame:
     df[cols] = df[cols].astype(float)
     
     # === Open=0 修复逻辑 ===
+    # 现象：非当天数据有时 Open 会显示为 0
     if (df["open"] == 0).any():
         print(f"   [清洗] 修复 Open=0 数据...")
         df["open"] = df["open"].replace(0, np.nan)
@@ -72,13 +73,14 @@ def generate_local_chart(symbol: str, df: pd.DataFrame, save_path: str):
     plot_df = df.copy()
     plot_df.set_index("date", inplace=True)
 
-    # 威科夫风格配色：涨红跌绿
+    # 威科夫风格配色：涨红跌绿 (符合国内习惯)
     mc = mpf.make_marketcolors(
         up='#ff3333', down='#00b060', 
         edge='inherit', wick='inherit', 
         volume={'up': '#ff3333', 'down': '#00b060'},
         inherit=True
     )
+    # 使用 yahoo 风格作为底板
     s = mpf.make_mpf_style(
         base_mpf_style='yahoo', 
         marketcolors=mc, 
@@ -111,7 +113,7 @@ def get_prompt_content(symbol, df):
     """读取并填充 Prompt 模板"""
     prompt_template = os.getenv("WYCKOFF_PROMPT_TEMPLATE")
     
-    # 本地回退逻辑
+    # 本地调试回退逻辑
     if not prompt_template and os.path.exists("prompt_secret.txt"):
         try:
             with open("prompt_secret.txt", "r", encoding="utf-8") as f:
@@ -130,7 +132,7 @@ def get_prompt_content(symbol, df):
                           .replace("{csv_data}", csv_data)
 
 def call_gemini_http(prompt: str) -> str:
-    """使用 HTTP POST 直接调用 Gemini API"""
+    """使用 HTTP POST 直接调用 Gemini API (避开 SDK 兼容性问题)"""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY not found")
@@ -138,6 +140,7 @@ def call_gemini_http(prompt: str) -> str:
     model_name = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
     print(f"   >>> Gemini ({model_name})...")
 
+    # 构建 REST API URL
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     
     headers = {'Content-Type': 'application/json'}
@@ -147,6 +150,7 @@ def call_gemini_http(prompt: str) -> str:
         "generationConfig": {"temperature": 0.2}
     }
 
+    # 发送请求
     resp = requests.post(url, headers=headers, json=data)
     
     if resp.status_code != 200:
@@ -200,7 +204,7 @@ def ai_analyze(symbol, df):
         return error_msg
 
 # ==========================================
-# 4. PDF 生成模块 (核心新增)
+# 4. PDF 生成模块
 # ==========================================
 
 def generate_pdf_report(symbol, chart_path, report_text, pdf_path):
@@ -212,7 +216,8 @@ def generate_pdf_report(symbol, chart_path, report_text, pdf_path):
     abs_chart_path = os.path.abspath(chart_path)
     
     # 3. 指定字体路径 (兼容 Linux/Windows)
-    font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc" # Linux GitHub Actions 路径
+    # 注意：daily.yml 中必须安装 fonts-wqy-microhei
+    font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc" 
     if not os.path.exists(font_path):
         font_path = "msyh.ttc" # 本地测试回退
     
@@ -268,7 +273,7 @@ def generate_pdf_report(symbol, chart_path, report_text, pdf_path):
         print(f"   [Error] PDF 生成失败: {e}")
 
 # ==========================================
-# 5. 主程序 (支持多股循环)
+# 5. 主程序 (支持 stock_list.txt 和多股循环)
 # ==========================================
 
 def process_one_stock(symbol: str):
@@ -312,7 +317,7 @@ def main():
     os.makedirs("data", exist_ok=True)
     os.makedirs("reports", exist_ok=True)
 
-    # === 优先读取 stock_list.txt ===
+    # === 优先读取 stock_list.txt (由 Telegram 机器人自动维护) ===
     symbols = []
     
     # 1. 尝试读取文件
@@ -324,7 +329,7 @@ def main():
         except Exception as e:
             print(f"   [Error] 读取文件失败: {e}")
 
-    # 2. 回退到环境变量
+    # 2. 回退到环境变量 (如果没有文件)
     if not symbols:
         print("⚠️ 未找到文件或为空，尝试读取环境变量 SYMBOLS...")
         symbols_env = os.getenv("SYMBOLS", "600970")
@@ -337,7 +342,7 @@ def main():
         print("❌ 没有找到任何股票代码，程序结束。")
         return
 
-    # 循环处理
+    # 循环处理每一只股票
     for i, symbol in enumerate(symbols):
         try:
             process_one_stock(symbol)
