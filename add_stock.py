@@ -33,14 +33,16 @@ def main():
     admin_chat_id = os.getenv("TG_CHAT_ID")
 
     if not bot_token:
-        print("未设置 TG_BOT_TOKEN")
+        print("❌ 错误：未设置 TG_BOT_TOKEN")
         return
 
     # 1. 获取消息
     updates = get_telegram_updates(bot_token)
     if not updates:
-        print("没有新消息")
+        print("📭 没有新消息")
         return
+
+    print(f"📥 收到 {len(updates)} 条消息，开始处理...")
 
     # 2. 读取现有股票列表
     file_path = "stock_list.txt"
@@ -49,14 +51,16 @@ def main():
         with open(file_path, "r", encoding="utf-8") as f:
             existing_stocks = {line.strip() for line in f if line.strip()}
 
-    new_stocks = set()
+    # 3. 初始化操作集合
+    stocks_to_add = set()
+    stocks_to_remove = set()
     latest_update_id = 0
     
     # 状态标记
     should_clear = False 
-    should_view = False # === 新增：是否触发查看 ===
+    should_view = False 
 
-    # 3. 解析消息
+    # 4. 解析消息 (只处理最近 40 分钟)
     current_time = time.time()
     
     for update in updates:
@@ -72,85 +76,108 @@ def main():
         if admin_chat_id and chat_id != str(admin_chat_id):
             continue
 
-        # 时间检查 (40分钟内)
+        # 时间检查
         if current_time - date > 2400: 
             continue
 
-        # === 指令 1: 检查查看/查询 ===
+        print(f"  -- 处理消息: {text}")
+
+        # === 预处理：提取消息中的所有股票代码 ===
+        # 只要是6位数字都提取出来
+        codes_in_msg = re.findall(r"\d{6}", text)
+
+        # === 意图识别 ===
+        
+        # 1. 识别 [删除] 指令
+        # 关键词：删除, 移除, del, delete, rm, remove
+        if re.search(r"(删除|移除|del|delete|rm|remove)", text, re.IGNORECASE):
+            # 如果消息包含删除词，则该消息里的所有代码都是要删除的
+            for code in codes_in_msg:
+                stocks_to_remove.add(code)
+                print(f"     -> 标记删除: {code}")
+        
+        # 2. 识别 [清空] 指令
+        elif re.search(r"(清空|clear)", text, re.IGNORECASE):
+            should_clear = True
+            print("     -> 标记清空")
+            
+        # 3. 识别 [添加] 指令 (默认)
+        # 如果不是删除，也不是清空，且包含代码，那就是添加
+        elif codes_in_msg:
+            for code in codes_in_msg:
+                stocks_to_add.add(code)
+                print(f"     -> 标记添加: {code}")
+
+        # 4. 识别 [查看] 指令
         if re.search(r"(查看|查询|列表|list|ls|cx)", text, re.IGNORECASE):
             should_view = True
-            print(f"收到查看指令: '{text}'")
 
-        # === 指令 2: 检查清空 ===
-        if re.search(r"(清空|clear)", text, re.IGNORECASE):
-            should_clear = True
-            print(f"收到清空指令: '{text}'")
-
-        # === 指令 3: 提取股票代码 ===
-        codes = re.findall(r"\d{6}", text)
-        for code in codes:
-            new_stocks.add(code)
-            print(f"发现股票代码: {code}")
-
-    # 4. 处理变更 (清空 或 添加)
+    # 5. 执行列表变更
     list_changed = False
     
-    if new_stocks or should_clear:
+    # 只要有任何增删改操作
+    if should_clear or stocks_to_add or stocks_to_remove:
         list_changed = True
-        final_list = set()
         
+        # 逻辑顺序：先处理清空 -> 再处理添加 -> 最后处理删除
+        
+        # 1. 确定基准列表
         if should_clear:
-            # 清空后，只保留本次新增
-            final_list = new_stocks
+            final_list = set()
             action_msg = "🗑 <b>列表已清空。</b>"
         else:
-            # 追加模式
-            final_list = existing_stocks.union(new_stocks)
-            action_msg = "✅ <b>已添加监控。</b>"
+            final_list = existing_stocks.copy()
+            action_msg = "✅ <b>列表已更新。</b>"
+
+        # 2. 执行添加
+        if stocks_to_add:
+            final_list = final_list.union(stocks_to_add)
+            action_msg += f"\n➕ 新增: {', '.join(sorted(stocks_to_add))}"
+
+        # 3. 执行删除 (删除优先级最高，防止刚加又不想加了)
+        if stocks_to_remove:
+            # 只有在列表里的才能删
+            removed_actual = set()
+            for code in stocks_to_remove:
+                if code in final_list:
+                    final_list.remove(code)
+                    removed_actual.add(code)
+            
+            if removed_actual:
+                action_msg += f"\n➖ 移除: {', '.join(sorted(removed_actual))}"
+            else:
+                action_msg += f"\n⚠️ 尝试移除 {', '.join(sorted(stocks_to_remove))} 但它们不在列表中"
 
         # 写入文件
         with open(file_path, "w", encoding="utf-8") as f:
             for stock in sorted(final_list):
                 f.write(f"{stock}\n")
         
-        # 更新内存中的列表，以便后续"查看"使用最新数据
+        # 更新内存数据
         existing_stocks = final_list
         
-        # 发送变更通知
-        if new_stocks:
-            stock_str = ", ".join(sorted(new_stocks))
-            msg = f"{action_msg}\n本次变动: {stock_str}"
-        else:
-            msg = f"{action_msg}"
-        send_reply(bot_token, admin_chat_id, msg)
+        send_reply(bot_token, admin_chat_id, action_msg)
 
-    # 5. 处理查看 (如果触发了查看，或者没有变动但有消息交互，反馈一下)
-    # 逻辑：如果用户发了"查看"，或者单纯想确认，就发完整列表
+    # 6. 执行查看逻辑
     if should_view:
         if existing_stocks:
-            # 格式化列表：每行一个，或者用逗号隔开
             sorted_list = sorted(existing_stocks)
-            # 为了美观，每行显示 3 个，或者直接列表
             list_str = "\n".join([f"• <code>{code}</code>" for code in sorted_list])
-            
-            view_msg = (
-                f"📋 <b>当前监控列表 ({len(sorted_list)}只):</b>\n"
-                f"{list_str}"
-            )
+            view_msg = f"📋 <b>当前监控列表 ({len(sorted_list)}只):</b>\n{list_str}"
         else:
             view_msg = "📭 <b>当前监控列表为空。</b>"
             
         send_reply(bot_token, admin_chat_id, view_msg)
 
-    # 6. 消费消息 (防止循环处理)
+    # 7. 标记消息已读
     if latest_update_id > 0:
         try:
             requests.get(f"https://api.telegram.org/bot{bot_token}/getUpdates?offset={latest_update_id + 1}", timeout=5)
         except:
             pass
-        
+
     if not (list_changed or should_view):
-        print("无有效指令。")
+        print("本次运行无有效指令。")
 
 if __name__ == "__main__":
     main()
