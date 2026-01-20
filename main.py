@@ -137,6 +137,7 @@ def call_gemini_http(prompt: str) -> str:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key: raise ValueError("GEMINI_API_KEY missing")
     
+    # 直接信任环境变量
     model_name = os.getenv("GEMINI_MODEL") 
     if not model_name: model_name = "gemini-1.5-flash"
     
