@@ -3,3 +3,8 @@ pandas
 openai
 python-dotenv
 mplfinance
+gspread
+oauth2client
+xhtml2pdf
+markdown
+requests
