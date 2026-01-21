@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas akshare mplfinance openai requests markdown xhtml2pdf gspread google-auth
+          pip install pandas akshare mplfinance openai requests markdown xhtml2pdf gspread google-auth baostock
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run Analysis Script
