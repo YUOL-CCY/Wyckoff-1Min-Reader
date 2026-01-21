@@ -18,7 +18,7 @@ import re
 from typing import Optional
 
 # ==========================================
-# 0) Gemini 稳定性增强：429 退避 + 致命错误熔断
+# 0) Gemini 稳定性增强：429 退避 + 致命错误熔断 + 防断连
 # ==========================================
 
 class GeminiQuotaExceeded(Exception):
@@ -66,7 +66,16 @@ def call_gemini_http(prompt: str) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
     session = requests.Session()
-    headers = {"Content-Type": "application/json"}
+    
+    # ✅ 核心修复：添加 User-Agent 和 Connection: close
+    headers = {
+        "Content-Type": "application/json",
+        # 伪装成 Chrome 浏览器，防止被防火墙拦截
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        # 强制短连接：每次请求后断开，防止复用已失效的 TCP 连接导致 RemoteDisconnected
+        "Connection": "close"
+    }
+
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -80,15 +89,15 @@ def call_gemini_http(prompt: str) -> str:
         "safetySettings": safety_settings,
     }
 
-    # ⚠️ 修改点：默认最大重试次数改为 3
     max_retries = int(os.getenv("GEMINI_MAX_RETRIES", "3"))
-    base_sleep = float(os.getenv("GEMINI_BASE_SLEEP", "3.0")) # 基础等待也稍微缩短一点
-    timeout_s = int(os.getenv("GEMINI_TIMEOUT", "120"))       # 超时改为 2分钟
+    base_sleep = float(os.getenv("GEMINI_BASE_SLEEP", "3.0"))
+    timeout_s = int(os.getenv("GEMINI_TIMEOUT", "120"))
 
     last_err: Optional[Exception] = None
 
     for attempt in range(1, max_retries + 1):
         try:
+            # 使用 verify=True 保持 SSL 安全，如果本地代理证书有问题，可改为 False (但不推荐)
             resp = session.post(url, headers=headers, json=data, timeout=timeout_s)
 
             if resp.status_code == 200:
