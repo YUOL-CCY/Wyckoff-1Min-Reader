@@ -478,8 +478,8 @@ def main():
             print(f"❌ [{symbol}] 处理发生异常: {e}", flush=True)
 
         if i < len(items) - 1:
-            print("⏳ 强制冷却 60秒...", flush=True)
-            time.sleep(60)
+            print("⏳ 强制冷却 15秒...", flush=True)
+            time.sleep(15)
 
     if generated_pdfs:
         print(f"\n📝 生成推送清单 ({len(generated_pdfs)}):", flush=True)
@@ -492,3 +492,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
