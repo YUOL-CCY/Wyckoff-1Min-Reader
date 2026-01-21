@@ -130,7 +130,6 @@ def call_gemini_http(prompt: str) -> str:
 # 1. 数据获取模块 (BaoStock历史 + AkShare实时 + 自动对齐)
 # ==========================================
 
-
 def _get_baostock_code(symbol: str) -> str:
     if symbol.startswith("6"): return f"sh.{symbol}"
     if symbol.startswith("0") or symbol.startswith("3"): return f"sz.{symbol}"
@@ -187,7 +186,8 @@ def fetch_stock_data_dynamic(symbol: str, timeframe_str: str, bar_count_str: str
     # === B. AkShare 实时补全 ===
     df_ak = pd.DataFrame()
     try:
-        ak_start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+        # AkShare 稍微多取几天，确保覆盖 BaoStock 缺失的近期数据
+        ak_start = (datetime.now() - timedelta(days=20)).strftime("%Y%m%d")
         df_ak = ak.stock_zh_a_hist_min_em(symbol=symbol_code, period=str(tf_min), start_date=ak_start, adjust="qfq")
         if not df_ak.empty:
             rename_map = {"时间": "date", "开盘": "open", "最高": "high", "最低": "low", "收盘": "close", "成交量": "volume"}
@@ -218,22 +218,19 @@ def fetch_stock_data_dynamic(symbol: str, timeframe_str: str, bar_count_str: str
                 print(f"   ⚖️ 修正 BaoStock 单位 (x100)", flush=True)
                 df_bs['volume'] = df_bs['volume'] * 100
 
-    df_final = pd.concat([df_bs, df_ak], axis=0)
+    # ⚠️ 【关键修复】使用 ignore_index=True 重新生成索引，防止索引重复导致 Reindexing Error
+    df_final = pd.concat([df_bs, df_ak], axis=0, ignore_index=True)
+    
+    # 去重（保留 AkShare 的最新数据）
     df_final = df_final.drop_duplicates(subset=['date'], keep='last')
+    
+    # 排序
     df_final = df_final.sort_values(by='date').reset_index(drop=True)
     
     if len(df_final) > limit:
         df_final = df_final.tail(limit).reset_index(drop=True)
 
     return {"df": df_final, "period": f"{tf_min}m"}
-
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    if "close" in df.columns:
-        df["ma50"] = df["close"].rolling(50).mean()
-        df["ma200"] = df["close"].rolling(200).mean()
-    return df
-
 
 # ==========================================
 # 2. 绘图模块
@@ -461,3 +458,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
