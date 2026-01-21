@@ -96,8 +96,7 @@ def call_gemini_http(prompt: str) -> str:
                 except:
                     raise ValueError(f"Invalid response: {str(result)[:200]}")
             
-            # 🛑 致命错误熔断：400 (Bad Request / Invalid Key)
-            # 遇到这种情况，重试没有任何意义，直接抛出 FatalError
+            # 🛑 致命错误熔断
             if resp.status_code == 400:
                 raise GeminiFatalError(f"Gemini API Key 无效或参数错误 (HTTP 400): {resp.text[:200]}")
 
@@ -124,15 +123,8 @@ def call_gemini_http(prompt: str) -> str:
 
             raise Exception(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
-        # 捕获异常处理
-        except GeminiFatalError:
-            # 遇到致命错误，直接往上抛，不进行后续的重试循环
-            raise 
-
-        except GeminiQuotaExceeded:
-            # 配额耗尽，直接往上抛，交给上层切 OpenAI
-            raise 
-
+        except GeminiFatalError: raise 
+        except GeminiQuotaExceeded: raise 
         except Exception as e:
             last_err = e
             if attempt == max_retries: raise
@@ -144,7 +136,7 @@ def call_gemini_http(prompt: str) -> str:
 
 
 # ==========================================
-# 1. 数据获取模块 (BaoStock历史 + AkShare实时 + 1分钟特判)
+# 1. 数据获取模块 (支持 1分钟 + 混合源)
 # ==========================================
 
 def _get_baostock_code(symbol: str) -> str:
@@ -164,21 +156,18 @@ def fetch_stock_data_dynamic(symbol: str, timeframe_str: str, bar_count_str: str
     try: limit = int(bar_count_str)
     except: limit = 500
 
-    # 允许 1, 5, 15, 30, 60. 如果是其他怪异周期，回退到 60
+    # 允许 1, 5, 15, 30, 60. 
     if tf_min not in [1, 5, 15, 30, 60]:
         print(f"   ⚠️ 周期 {tf_min} 非标准(支持1/5/15/30/60)，调整为 60", flush=True)
         tf_min = 60
     
-    # 2. 动态计算需要的历史天数 (Days Back)
-    # 1分钟线比较特殊，一天240根。如果limit=600，只要3天。如果limit=5000，需要20多天。
-    # 乘以 2.5 是为了覆盖周末和节假日
+    # 2. 动态计算需要的历史天数
     total_minutes = limit * tf_min
     days_back = int((total_minutes / 240) * 2.5) + 10 
     
-    # 计算回溯的起始日期
     start_date_dt = datetime.now() - timedelta(days=days_back)
     start_date_str = start_date_dt.strftime("%Y-%m-%d")
-    start_date_ak_str = start_date_dt.strftime("%Y%m%d") # AkShare 格式 YYYYMMDD
+    start_date_ak_str = start_date_dt.strftime("%Y%m%d")
     
     source_msg = "AkShare Only" if tf_min == 1 else "BaoStock+AkShare"
     print(f"   🔍 获取 {symbol_code}: 周期={tf_min}m, 目标={limit}根 ({source_msg})", flush=True)
@@ -201,27 +190,17 @@ def fetch_stock_data_dynamic(symbol: str, timeframe_str: str, bar_count_str: str
                     df_bs = pd.DataFrame(data_list, columns=rs.fields)
                     
                     if not df_bs.empty:
-                        # BaoStock Time 解析
                         df_bs["date"] = pd.to_datetime(df_bs["time"], format="%Y%m%d%H%M%S000", errors="coerce")
                         df_bs = df_bs.drop(columns=["time"], errors="ignore")
-                        
                         cols = ["open", "high", "low", "close", "volume"]
                         for c in cols: df_bs[c] = pd.to_numeric(df_bs[c], errors="coerce")
-                        
                         df_bs = df_bs.dropna(subset=["date", "close"])
                         df_bs = df_bs[["date", "open", "high", "low", "close", "volume"]]
             bs.logout()
         except Exception as e:
             print(f"   [BaoStock] 异常: {e}", flush=True)
-    else:
-        # 1分钟周期，BaoStock 不支持，直接跳过
-        pass
 
     # === B. AkShare 数据获取 ===
-    # 策略调整：
-    # - 如果是 1分钟 (tf_min=1): AkShare 负责全量，使用计算出来的 start_date_ak_str
-    # - 如果是 5分钟+ (tf_min>=5): AkShare 仅负责补全近期缺口，取最近 20 天即可
-    
     ak_fetch_start = start_date_ak_str if tf_min == 1 else (datetime.now() - timedelta(days=20)).strftime("%Y%m%d")
     
     df_ak = pd.DataFrame()
@@ -230,28 +209,20 @@ def fetch_stock_data_dynamic(symbol: str, timeframe_str: str, bar_count_str: str
         if not df_ak.empty:
             rename_map = {"时间": "date", "开盘": "open", "最高": "high", "最低": "low", "收盘": "close", "成交量": "volume"}
             df_ak = df_ak.rename(columns={k: v for k, v in rename_map.items() if k in df_ak.columns})
-            
             df_ak["date"] = pd.to_datetime(df_ak["date"], errors="coerce")
             cols = ["open", "high", "low", "close", "volume"]
             for c in cols: df_ak[c] = pd.to_numeric(df_ak[c], errors="coerce")
-            
-            # 0值修复
             df_ak["open"] = df_ak["open"].replace(0, np.nan)
             df_ak["open"] = df_ak["open"].fillna(df_ak["close"].shift(1)).fillna(df_ak["close"])
-            
             df_ak = df_ak.dropna(subset=["date", "close"])
             df_ak = df_ak[["date", "open", "high", "low", "close", "volume"]]
     except Exception as e:
         print(f"   [AkShare] 异常: {e}", flush=True)
 
     # === C. 合并与清洗 ===
-    
-    # 1. 两个都空
     if df_bs.empty and df_ak.empty:
         return {"df": pd.DataFrame(), "period": f"{tf_min}m"}
     
-    # 2. 自动对齐单位 (仅当两者都有数据时才能对比)
-    # 如果是 1分钟数据，df_bs 是空的，这步会跳过，直接用 AkShare 的原生单位
     if not df_bs.empty and not df_ak.empty:
         mean_bs = df_bs['volume'].mean()
         mean_ak = df_ak['volume'].mean()
@@ -270,20 +241,25 @@ def fetch_stock_data_dynamic(symbol: str, timeframe_str: str, bar_count_str: str
                 print(f"   ⚖️ 修正 BaoStock 单位 (x100)", flush=True)
                 df_bs['volume'] = df_bs['volume'] * 100
 
-    # 3. 合并
-    # 如果是 1分钟，df_bs 为空，concat 实际上就是 df_ak
+    # ⚠️ ignore_index=True 防止重复索引
     df_final = pd.concat([df_bs, df_ak], axis=0, ignore_index=True)
-    
-    # 4. 去重 & 排序
     df_final = df_final[["date", "open", "high", "low", "close", "volume"]]
     df_final = df_final.drop_duplicates(subset=['date'], keep='last')
     df_final = df_final.sort_values(by='date').reset_index(drop=True)
     
-    # 5. 截取目标长度
     if len(df_final) > limit:
         df_final = df_final.tail(limit).reset_index(drop=True)
 
     return {"df": df_final, "period": f"{tf_min}m"}
+
+# ⚠️ 此处补回了之前丢失的 add_indicators
+def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    if "close" in df.columns:
+        df["ma50"] = df["close"].rolling(50).mean()
+        df["ma200"] = df["close"].rolling(200).mean()
+    return df
+
 
 # ==========================================
 # 2. 绘图模块
@@ -377,7 +353,7 @@ def ai_analyze(symbol, df, position_info):
     try:
         return call_gemini_http(prompt)
     except GeminiFatalError as fe:
-        print(f"   ⚠️ [{symbol}] Gemini 致命错误 (Key无效/参数错) -> OpenAI: {str(fe)[:100]}", flush=True)
+        print(f"   ⚠️ [{symbol}] Gemini 致命错误 (Key无效/参数错) -> OpenAI", flush=True)
         try: return call_openai_official(prompt)
         except Exception as e2: return f"Analysis Failed. OpenAI Err: {e2}"
     except GeminiQuotaExceeded as qe:
@@ -501,8 +477,8 @@ def main():
             print(f"❌ [{symbol}] 处理发生异常: {e}", flush=True)
 
         if i < len(items) - 1:
-            print("⏳ 强制冷却 15秒...", flush=True)
-            time.sleep(15)
+            print("⏳ 强制冷却 60秒...", flush=True)
+            time.sleep(60)
 
     if generated_pdfs:
         print(f"\n📝 生成推送清单 ({len(generated_pdfs)}):", flush=True)
@@ -515,5 +491,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
