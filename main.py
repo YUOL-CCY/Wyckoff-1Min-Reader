@@ -63,7 +63,7 @@ def call_gemini_http(prompt: str) -> str:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key: raise ValueError("GEMINI_API_KEY missing")
 
-    model_name = os.getenv("GEMINI_MODEL") or "gemini-3-flash"
+    model_name = os.getenv("GEMINI_MODEL") or "gemini-3-pro-preview"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
     session = requests.Session()
@@ -522,5 +522,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
