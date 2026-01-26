@@ -423,42 +423,36 @@ def ai_analyze(symbol, df, position_info):
 # ==========================================
 
 def generate_pdf_report(symbol, chart_path, report_text, pdf_path):
-    html_content = markdown.markdown(report_text, extensions=['extra'])
+    html_content = markdown.markdown(report_text)
     abs_chart_path = os.path.abspath(chart_path)
     font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
-    if not os.path.exists(font_path): font_path = "msyh.ttc" 
-    
+    if not os.path.exists(font_path): font_path = "msyh.ttc"
+
     full_html = f"""
     <html>
     <head>
         <meta charset="utf-8">
         <style>
             @font-face {{ font-family: "MyChineseFont"; src: url("{font_path}"); }}
-            @page {{ size: A4; margin: 1.5cm; @frame footer_frame {{ -pdf-frame-content: footerContent; bottom: 0cm; height: 1cm; }} }}
-            body {{ font-family: "MyChineseFont", sans-serif; font-size: 12px; line-height: 1.6; color: #2c3e50; -pdf-word-wrap: CJK; }}
-            h1, h2, h3 {{ color: #2c3e50; margin-top: 20px; }}
-            p {{ margin-bottom: 10px; }}
-            img {{ zoom: 55%; margin: 20px auto; display: block; }}
-            .header {{ text-align: center; color: #7f8c8d; font-size: 10px; }}
+            @page {{ size: A4; margin: 1cm; }}
+            body {{ font-family: "MyChineseFont", sans-serif; font-size: 12px; line-height: 1.5; }}
+            h1, h2, h3, p, div {{ font-family: "MyChineseFont", sans-serif; color: #2c3e50; }}
+            img {{ width: 18cm; margin-bottom: 20px; }}
+            .header {{ text-align: center; margin-bottom: 20px; color: #7f8c8d; font-size: 10px; }}
         </style>
     </head>
     <body>
         <div class="header">Wyckoff Quantitative Analysis | {symbol}</div>
-        <div style="text-align: center;"><img src="{abs_chart_path}" /></div>
-        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
+        <img src="{abs_chart_path}" />
+        <hr/>
         {html_content}
-        <div id="footerContent" style="text-align:center; font-size: 9px; color: gray;">Page <pdf:pagenumber></div>
     </body>
     </html>
     """
     try:
-        with open(pdf_path, "wb") as pdf_file:
-            pisa.CreatePDF(src=full_html.encode("utf-8"), dest=pdf_file)
+        with open(pdf_path, "wb") as pdf_file: pisa.CreatePDF(full_html, dest=pdf_file)
         return True
-    except Exception as e:
-        print(f"    ❌ PDF 生成失败: {e}", flush=True)
-        return False
-
+    except: return False
 
 # ==========================================
 # 5. 主程序 (串行 + 30s 休息)
@@ -528,4 +522,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
